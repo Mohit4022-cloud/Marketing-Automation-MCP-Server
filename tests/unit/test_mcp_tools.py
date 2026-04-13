@@ -57,6 +57,9 @@ def test_live_report_blocks_without_platform_credentials(monkeypatch):
 
 def test_live_copy_blocks_without_provider_credentials(monkeypatch):
     monkeypatch.setenv("DEMO_MODE", "false")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("AI_OPENAI_MODEL", raising=False)
+    monkeypatch.delenv("AI_PROVIDER", raising=False)
     result = __import__("asyncio").run(
         create_campaign_copy(
             CreateCampaignCopyInput(
