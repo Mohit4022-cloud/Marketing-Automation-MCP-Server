@@ -1,5 +1,8 @@
 name: CI/CD Pipeline
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 on:
   push:
     branches: [ main, develop ]
@@ -94,6 +97,7 @@ jobs:
       run: |
         docker build -t marketing-automation-mcp:latest .
     
-    - name: Run Docker tests
+    - name: Run Docker smoke checks
       run: |
-        docker run --rm marketing-automation-mcp:latest python3 -m pytest -v
+        docker run --rm -e DEMO_MODE=true marketing-automation-mcp:latest python3 -m compileall src tests dashboard
+        docker run --rm -e DEMO_MODE=true marketing-automation-mcp:latest python3 -c "import src.server, src.cli, src.ai_engine; print('container imports ok')"

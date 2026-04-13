@@ -20,6 +20,6 @@ RUN pip install --no-cache-dir jupyter notebook redis gunicorn
 
 RUN mkdir -p /app/data /app/reports /app/logs /app/output
 
-ENV PYTHONPATH=/app:$PYTHONPATH
+ENV PYTHONPATH=/app
 
 CMD ["python3", "-m", "src.server"]
