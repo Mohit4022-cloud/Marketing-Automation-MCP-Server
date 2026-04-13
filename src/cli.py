@@ -1,518 +1,353 @@
 #!/usr/bin/env python3
-"""
-Marketing Automation MCP CLI Interface
-For manual testing and administration
-"""
+"""CLI for manual testing and administration of Marketing Automation MCP."""
 
-import click
+from __future__ import annotations
+
 import asyncio
 import json
-from datetime import datetime, timedelta
-from tabulate import tabulate
-from typing import Optional, List
 import os
 import sys
+from datetime import datetime, timedelta
 
-# Add parent directory to path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import click
+from tabulate import tabulate
 
+from src.config import Config
+from src.database import DatabaseManager
+from src.integrations.unified_client import Platform, UnifiedMarketingClient
+from src.logger import get_logger
+from src.models import (
+    AnalyzeAudienceSegmentsInput,
+    CreateCampaignCopyInput,
+    ExecutionStatus,
+    GenerateCampaignReportInput,
+    MetricType,
+    OptimizeCampaignBudgetInput,
+    OptimizationGoal,
+    ReportFormat,
+    SegmentCriteria,
+    ToneOfVoice,
+)
 from src.tools.marketing_tools import (
+    analyze_audience_segments,
+    create_campaign_copy,
     generate_campaign_report,
     optimize_campaign_budget,
-    create_campaign_copy,
-    analyze_audience_segments
 )
-from src.models import (
-    GenerateCampaignReportInput,
-    OptimizeCampaignBudgetInput,
-    CreateCampaignCopyInput,
-    AnalyzeAudienceSegmentsInput,
-    ReportFormat,
-    ToneOfVoice,
-    SegmentCriteria
-)
-from src.integrations.unified_client import UnifiedMarketingClient, Platform
-from src.database import DatabaseManager
-from src.config import Config
-from src.logger import get_logger
 
 logger = get_logger(__name__)
 
+
+def _handle_blocked(result) -> bool:
+    """Print blocked execution info and signal the caller."""
+    if getattr(result, "status", None) != ExecutionStatus.BLOCKED:
+        return False
+    click.echo(f"⚠️  Blocked: {result.blocked_reason or 'Operation cannot proceed.'}")
+    for warning in getattr(result, "warnings", []):
+        click.echo(f"   - {warning}")
+    return True
+
+
 @click.group()
-@click.option('--config', '-c', default='config.yaml', help='Configuration file path')
+@click.option("--config", "-c", default="config.yaml", help="Configuration file path")
 @click.pass_context
 def cli(ctx, config):
-    """Marketing Automation MCP CLI - Test and manage your marketing automation"""
+    """Marketing Automation MCP CLI."""
     ctx.ensure_object(dict)
-    ctx.obj['config'] = Config.load(config)
+    ctx.obj["config"] = Config.load(config)
     logger.info("CLI initialized", extra={"config_file": config})
 
+
 @cli.command()
-@click.option('--campaign-ids', '-c', multiple=True, required=True, help='Campaign IDs to analyze')
-@click.option('--days', '-d', default=30, help='Number of days to analyze')
-@click.option('--format', '-f', type=click.Choice(['json', 'html', 'pdf', 'csv']), default='json')
-@click.option('--output', '-o', help='Output file path')
-@click.pass_context
-def report(ctx, campaign_ids, days, format, output):
-    """Generate a campaign performance report"""
-    logger.info("Generating report", extra={
-        "campaign_ids": campaign_ids,
-        "days": days,
-        "format": format
-    })
-    
+@click.option("--campaign-ids", "-c", multiple=True, required=True)
+@click.option("--days", "-d", default=30, type=int)
+@click.option(
+    "--format", "-f", type=click.Choice(["json", "html", "pdf", "csv"]), default="json"
+)
+@click.option("--output", "-o", help="Output file path for JSON results")
+def report(campaign_ids, days, format, output):
+    """Generate a campaign performance report."""
+
     async def run():
-        try:
-            # Prepare input
-            end_date = datetime.now()
-            start_date = end_date - timedelta(days=days)
-            
-            input_data = GenerateCampaignReportInput(
+        end_date = datetime.utcnow()
+        start_date = end_date - timedelta(days=days)
+        result = await generate_campaign_report(
+            GenerateCampaignReportInput(
                 campaign_ids=list(campaign_ids),
                 date_range={
-                    "start": start_date.strftime("%Y-%m-%d"),
-                    "end": end_date.strftime("%Y-%m-%d")
+                    "start": start_date.date().isoformat(),
+                    "end": end_date.date().isoformat(),
                 },
-                metrics=["impressions", "clicks", "conversions", "cost", "revenue", "roi"],
+                metrics=[
+                    MetricType.IMPRESSIONS,
+                    MetricType.CLICKS,
+                    MetricType.CONVERSIONS,
+                    MetricType.COST,
+                    MetricType.REVENUE,
+                    MetricType.ROI,
+                ],
                 format=ReportFormat(format),
                 include_charts=True,
-                include_insights=True
             )
-            
-            # Generate report
-            click.echo("🔄 Generating report...")
-            result = await generate_campaign_report(input_data)
-            
-            # Display summary
-            click.echo("\n📊 Report Summary:")
-            click.echo(f"Report ID: {result.report_id}")
-            click.echo(f"Campaigns Analyzed: {len(result.campaigns)}")
-            click.echo(f"Total Impressions: {result.summary['total_impressions']:,}")
-            click.echo(f"Total Conversions: {result.summary['total_conversions']:,}")
-            click.echo(f"Average ROI: {result.summary['average_roi']:.1f}%")
-            
-            # Save output if requested
-            if output:
-                if format == 'json':
-                    with open(output, 'w') as f:
-                        json.dump(result.dict(), f, indent=2, default=str)
-                    click.echo(f"\n✅ Report saved to: {output}")
-                elif result.download_url:
-                    click.echo(f"\n📥 Download report: {result.download_url}")
-            
-            logger.info("Report generated successfully", extra={
-                "report_id": result.report_id,
-                "roi": result.summary['average_roi']
-            })
-            
-        except Exception as e:
-            logger.error("Report generation failed", exc_info=True)
-            click.echo(f"❌ Error: {str(e)}", err=True)
-            sys.exit(1)
-    
+        )
+        if _handle_blocked(result):
+            return
+
+        click.echo(f"Report ID: {result.report_id}")
+        click.echo(f"Mode: {result.mode.value}")
+        click.echo(f"Campaigns analyzed: {len(result.campaigns)}")
+        click.echo(f"Total impressions: {result.summary['total_impressions']:,}")
+        click.echo(f"Total conversions: {result.summary['total_conversions']:,}")
+        click.echo(f"Average ROI: {result.summary['average_roi']:.2f}%")
+        if result.warnings:
+            click.echo("Warnings:")
+            for warning in result.warnings:
+                click.echo(f"  - {warning}")
+        if output:
+            with open(output, "w", encoding="utf-8") as handle:
+                json.dump(result.model_dump(mode="json"), handle, indent=2)
+            click.echo(f"Saved JSON report to {output}")
+
     asyncio.run(run())
 
+
 @cli.command()
-@click.option('--campaign-ids', '-c', multiple=True, required=True, help='Campaign IDs to optimize')
-@click.option('--budget', '-b', type=float, required=True, help='Total budget to allocate')
-@click.option('--goal', '-g', type=click.Choice(['maximize_roi', 'maximize_conversions', 'minimize_cpa']), 
-              default='maximize_roi')
-@click.option('--apply', is_flag=True, help='Apply recommendations automatically')
-@click.pass_context
-def optimize(ctx, campaign_ids, budget, goal, apply):
-    """Optimize campaign budget allocation with AI"""
-    logger.info("Optimizing budgets", extra={
-        "campaign_ids": campaign_ids,
-        "budget": budget,
-        "goal": goal
-    })
-    
+@click.option("--campaign-ids", "-c", multiple=True, required=True)
+@click.option("--budget", "-b", type=float, required=True)
+@click.option(
+    "--goal",
+    "-g",
+    type=click.Choice([goal.value for goal in OptimizationGoal]),
+    default=OptimizationGoal.MAXIMIZE_ROI.value,
+)
+@click.option("--apply", is_flag=True, help="Apply live budget changes to Google Ads")
+def optimize(campaign_ids, budget, goal, apply):
+    """Optimize campaign budget allocation."""
+
     async def run():
-        try:
-            input_data = OptimizeCampaignBudgetInput(
+        result = await optimize_campaign_budget(
+            OptimizeCampaignBudgetInput(
                 campaign_ids=list(campaign_ids),
                 total_budget=budget,
-                optimization_goal=goal,
-                include_projections=True
+                optimization_goal=OptimizationGoal(goal),
             )
-            
-            click.echo("🤖 Running AI optimization...")
-            result = await optimize_campaign_budget(input_data)
-            
-            # Display recommendations
-            click.echo("\n💡 Optimization Recommendations:")
-            click.echo(f"Confidence Score: {result.confidence_score:.1%}")
-            click.echo(f"Projected ROI Improvement: {result.projected_improvement['roi_change']:.1f}%")
-            
-            # Show allocations table
-            table_data = []
-            for alloc in result.allocations:
-                change = alloc.change_percentage
-                change_str = f"+{change:.1f}%" if change > 0 else f"{change:.1f}%"
-                table_data.append([
-                    alloc.campaign_id,
-                    f"${alloc.current_budget:,.2f}",
-                    f"${alloc.recommended_budget:,.2f}",
-                    change_str
-                ])
-            
-            click.echo("\n📊 Budget Allocations:")
-            click.echo(tabulate(table_data, 
-                              headers=["Campaign", "Current", "Recommended", "Change"],
-                              tablefmt="pretty"))
-            
-            # Apply if requested
-            if apply:
-                click.echo("\n🚀 Applying optimizations...")
-                client = UnifiedMarketingClient()
-                await client.connect_all()
-                
-                for alloc in result.allocations:
-                    if abs(alloc.change_percentage) > 5:  # Significant change
-                        await client.update_campaign_budget(
-                            campaign_id=alloc.campaign_id,
-                            new_budget=alloc.recommended_budget
-                        )
-                        click.echo(f"✅ Updated {alloc.campaign_id}")
-                
-                click.echo("\n✨ Optimizations applied successfully!")
-            
-            logger.info("Optimization completed", extra={
-                "roi_improvement": result.projected_improvement['roi_change'],
-                "applied": apply
-            })
-            
-        except Exception as e:
-            logger.error("Optimization failed", exc_info=True)
-            click.echo(f"❌ Error: {str(e)}", err=True)
-            sys.exit(1)
-    
+        )
+        if _handle_blocked(result):
+            return
+
+        click.echo(f"Optimization ID: {result.optimization_id}")
+        click.echo(f"Mode: {result.mode.value}")
+        click.echo(f"Confidence score: {result.confidence_score:.2f}")
+        click.echo(
+            f"Projected ROI change: {result.projected_improvement.roi_change:.2f}%"
+        )
+        click.echo(
+            f"Projected conversion change: {result.projected_improvement.conversion_change:.2f}%"
+        )
+
+        rows = [
+            [
+                allocation.campaign_id,
+                f"${allocation.current_budget:,.2f}",
+                f"${allocation.recommended_budget:,.2f}",
+                f"{allocation.change_percentage:+.2f}%",
+            ]
+            for allocation in result.allocations
+        ]
+        click.echo(tabulate(rows, headers=["Campaign", "Current", "Recommended", "Change"]))
+
+        if result.recommendations:
+            click.echo("Recommendations:")
+            for recommendation in result.recommendations:
+                click.echo(f"  - {recommendation}")
+
+        if apply and result.mode.value == "live":
+            client = UnifiedMarketingClient()
+            try:
+                await client.connect(Platform.GOOGLE_ADS)
+                for allocation in result.allocations:
+                    await client.update_campaign_budget(
+                        campaign_id=allocation.campaign_id,
+                        new_budget=allocation.recommended_budget,
+                    )
+                    click.echo(f"Applied budget for {allocation.campaign_id}")
+            finally:
+                await client.disconnect_all()
+
     asyncio.run(run())
 
+
 @cli.command()
-@click.option('--product', '-p', required=True, help='Product name')
-@click.option('--description', '-d', required=True, help='Product description')
-@click.option('--audience', '-a', required=True, help='Target audience')
-@click.option('--tone', '-t', type=click.Choice(['professional', 'casual', 'friendly', 'urgent']), 
-              default='professional')
-@click.option('--type', '-y', 'copy_type', type=click.Choice(['ad_headline', 'ad_description', 'email_subject', 'email_body']),
-              default='ad_headline')
-@click.option('--count', '-n', default=3, help='Number of variants')
-@click.pass_context
-def copy(ctx, product, description, audience, tone, copy_type, count):
-    """Generate AI-powered marketing copy"""
-    logger.info("Generating copy", extra={
-        "product": product,
-        "tone": tone,
-        "type": copy_type
-    })
-    
+@click.option("--product", "-p", required=True)
+@click.option("--description", "-d", required=True)
+@click.option("--audience", "-a", required=True)
+@click.option(
+    "--tone",
+    "-t",
+    type=click.Choice([tone.value for tone in ToneOfVoice]),
+    default=ToneOfVoice.PROFESSIONAL.value,
+)
+@click.option("--type", "-y", "copy_type", default="ad_headline")
+@click.option("--count", "-n", type=int, default=3)
+def copy(product, description, audience, tone, copy_type, count):
+    """Generate marketing copy."""
+
     async def run():
-        try:
-            input_data = CreateCampaignCopyInput(
+        result = await create_campaign_copy(
+            CreateCampaignCopyInput(
                 product_name=product,
                 product_description=description,
                 target_audience=audience,
                 tone=ToneOfVoice(tone),
                 copy_type=copy_type,
-                variants_count=count
+                variants_count=count,
             )
-            
-            click.echo("✍️  Generating copy variants...")
-            result = await create_campaign_copy(input_data)
-            
-            click.echo(f"\n🎨 Generated {len(result.variants)} Variants:")
-            click.echo("="*60)
-            
-            for i, variant in enumerate(result.variants, 1):
-                click.echo(f"\n📝 Variant {i}:")
-                if hasattr(variant, 'headline'):
-                    click.echo(f"   Headline: {variant.headline}")
-                if hasattr(variant, 'description'):
-                    click.echo(f"   Description: {variant.description}")
-                click.echo(f"   Predicted CTR: {variant.predicted_ctr:.1f}%")
-                if hasattr(variant, 'keywords'):
-                    click.echo(f"   Keywords: {', '.join(variant.keywords)}")
-            
-            click.echo(f"\n⭐ Best Performer: Variant {result.best_performer_index + 1}")
-            
-            logger.info("Copy generated successfully", extra={
-                "variants": len(result.variants),
-                "best_ctr": result.variants[result.best_performer_index].predicted_ctr
-            })
-            
-        except Exception as e:
-            logger.error("Copy generation failed", exc_info=True)
-            click.echo(f"❌ Error: {str(e)}", err=True)
-            sys.exit(1)
-    
+        )
+        if _handle_blocked(result):
+            return
+
+        click.echo(f"Copy generation ID: {result.copy_generation_id}")
+        click.echo(f"Mode: {result.mode.value}")
+        for variant in result.variants:
+            click.echo("")
+            click.echo(f"Variant {variant.variant_id}")
+            if variant.headline:
+                click.echo(f"  Headline: {variant.headline}")
+            click.echo(f"  Content: {variant.content}")
+            if variant.call_to_action:
+                click.echo(f"  CTA: {variant.call_to_action}")
+            if variant.predicted_ctr is not None:
+                click.echo(f"  Predicted CTR: {variant.predicted_ctr:.2f}%")
+        click.echo(f"\nBest variant ID: {result.best_variant_id}")
+
     asyncio.run(run())
 
+
 @cli.command()
-@click.option('--list-id', '-l', default='main', help='Contact list ID')
-@click.option('--min-size', '-m', default=100, help='Minimum segment size')
-@click.option('--max-segments', '-s', default=5, help='Maximum number of segments')
-@click.pass_context
-def segment(ctx, list_id, min_size, max_segments):
-    """Analyze and segment your audience"""
-    logger.info("Analyzing segments", extra={
-        "list_id": list_id,
-        "min_size": min_size
-    })
-    
+@click.option("--list-id", "-l", default="main")
+@click.option("--min-size", "-m", default=100, type=int)
+@click.option("--max-segments", "-s", default=5, type=int)
+def segment(list_id, min_size, max_segments):
+    """Analyze audience segments."""
+
     async def run():
-        try:
-            input_data = AnalyzeAudienceSegmentsInput(
+        result = await analyze_audience_segments(
+            AnalyzeAudienceSegmentsInput(
                 contact_list_id=list_id,
-                criteria=[SegmentCriteria.DEMOGRAPHICS, SegmentCriteria.BEHAVIOR, 
-                         SegmentCriteria.ENGAGEMENT],
+                criteria=[
+                    SegmentCriteria.DEMOGRAPHICS,
+                    SegmentCriteria.BEHAVIOR,
+                    SegmentCriteria.ENGAGEMENT,
+                ],
                 min_segment_size=min_size,
                 max_segments=max_segments,
-                include_recommendations=True
             )
-            
-            click.echo("👥 Analyzing audience segments...")
-            result = await analyze_audience_segments(input_data)
-            
-            click.echo(f"\n📊 Segmentation Results:")
-            click.echo(f"Total Contacts: {result.total_contacts:,}")
-            click.echo(f"Segments Identified: {len(result.segments)}")
-            
-            # Display segments table
-            table_data = []
-            for seg in result.segments:
-                table_data.append([
-                    seg.name,
-                    f"{seg.size:,}",
-                    f"{seg.value_score}/100",
-                    f"{seg.engagement_score}/100",
-                    ', '.join(seg.characteristics[:2])
-                ])
-            
-            click.echo("\n📋 Audience Segments:")
-            click.echo(tabulate(table_data,
-                              headers=["Segment", "Size", "Value", "Engagement", "Key Traits"],
-                              tablefmt="pretty"))
-            
-            # Show recommendations
-            if result.recommendations:
-                click.echo("\n💡 Recommendations:")
-                for i, rec in enumerate(result.recommendations[:5], 1):
-                    click.echo(f"   {i}. {rec}")
-            
-            logger.info("Segmentation completed", extra={
-                "segments": len(result.segments),
-                "total_contacts": result.total_contacts
-            })
-            
-        except Exception as e:
-            logger.error("Segmentation failed", exc_info=True)
-            click.echo(f"❌ Error: {str(e)}", err=True)
-            sys.exit(1)
-    
+        )
+        if _handle_blocked(result):
+            return
+
+        click.echo(f"Analysis ID: {result.analysis_id}")
+        click.echo(f"Mode: {result.mode.value}")
+        rows = [
+            [
+                segment.name,
+                segment.size,
+                segment.value_score,
+                segment.engagement_score,
+                json.dumps(segment.characteristics),
+            ]
+            for segment in result.segments
+        ]
+        click.echo(
+            tabulate(
+                rows,
+                headers=["Segment", "Size", "Value", "Engagement", "Characteristics"],
+            )
+        )
+        if result.recommendations:
+            click.echo("Recommendations:")
+            for recommendation in result.recommendations:
+                click.echo(
+                    f"  - {recommendation.segment_name}: {recommendation.strategy} via {', '.join(recommendation.channels)}"
+                )
+
     asyncio.run(run())
 
+
 @cli.command()
-@click.option('--days', '-d', default=30, help='Number of days to analyze')
-@click.pass_context
-def metrics(ctx, days):
-    """Display automation metrics and ROI"""
-    logger.info("Displaying metrics", extra={"days": days})
-    
-    try:
-        db = DatabaseManager()
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=days)
-        
-        # Calculate metrics
-        roi_data = db.calculate_period_roi(
-            period_start=start_date,
-            period_end=end_date
-        )
-        
-        if roi_data:
-            click.echo("\n📈 Automation Metrics:")
-            click.echo("="*50)
-            click.echo(f"Period: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
-            click.echo(f"\n⏱️  Time Savings:")
-            click.echo(f"   Total Hours Saved: {roi_data.total_time_saved_hours:.1f}")
-            click.echo(f"   Tasks Automated: {roi_data.tasks_automated}")
-            click.echo(f"   Efficiency Gain: 75% reduction in optimization time")
-            
-            click.echo(f"\n💰 Cost Savings:")
-            click.echo(f"   Labor Cost Saved: ${roi_data.labor_cost_saved:,.2f}")
-            click.echo(f"   Avg Hourly Rate: ${roi_data.avg_hourly_rate:.2f}")
-            
-            click.echo(f"\n📊 Performance Impact:")
-            click.echo(f"   ROI Improvement: {roi_data.avg_performance_improvement:.1f}%")
-            click.echo(f"   CTR Improvement: {roi_data.avg_ctr_improvement:.1f}%")
-            click.echo(f"   Conversion Rate: +{roi_data.avg_conversion_improvement:.1f}%")
-            click.echo(f"   Campaign ROI: Average 23% improvement")
-            
-            click.echo(f"\n🚀 Overall ROI:")
-            click.echo(f"   ROI Percentage: {roi_data.roi_percentage:.1f}%")
-            
-            logger.info("Metrics displayed", extra={
-                "roi": roi_data.roi_percentage,
-                "hours_saved": roi_data.total_time_saved_hours
-            })
-        else:
-            click.echo("No data available for the specified period.")
-            
-    except Exception as e:
-        logger.error("Metrics retrieval failed", exc_info=True)
-        click.echo(f"❌ Error: {str(e)}", err=True)
-        sys.exit(1)
+@click.option("--days", "-d", default=30, type=int)
+def metrics(days):
+    """Display automation metrics and ROI."""
+    db = DatabaseManager()
+    end_date = datetime.utcnow()
+    start_date = end_date - timedelta(days=days)
+    roi_data = db.calculate_period_roi(period_start=start_date, period_end=end_date)
+    click.echo(f"Tasks automated: {roi_data.tasks_automated}")
+    click.echo(f"Time saved: {roi_data.total_time_saved_hours:.2f}h")
+    click.echo(f"Labor cost saved: ${float(roi_data.labor_cost_saved):,.2f}")
+    click.echo(f"ROI percentage: {roi_data.roi_percentage:.2f}%")
+
 
 @cli.command()
 @click.pass_context
 def platforms(ctx):
-    """List and test platform connections"""
-    logger.info("Testing platform connections")
-    
+    """Check platform connectivity."""
+
     async def run():
-        try:
-            client = UnifiedMarketingClient()
-            config = ctx.obj['config']
-            
-            click.echo("\n🔌 Platform Connections:")
-            click.echo("="*50)
-            
-            # Test each platform
-            platforms_status = []
-            
-            for platform in Platform:
-                if platform == Platform.ALL:
-                    continue
-                    
-                click.echo(f"\n{platform.value}:")
-                
-                # Check if credentials exist
-                creds_exist = config.has_platform_credentials(platform)
-                if not creds_exist:
-                    click.echo("   ❌ No credentials configured")
-                    platforms_status.append([platform.value, "Not Configured", "-"])
-                    continue
-                
-                # Try to connect
-                try:
-                    await client.connect_platform(platform)
-                    click.echo("   ✅ Connected successfully")
-                    
-                    # Get some stats if available
-                    if platform in client._connected_clients:
-                        # Mock stats for demo
-                        stats = {
-                            Platform.GOOGLE_ADS: "5 campaigns, $50k budget",
-                            Platform.FACEBOOK_ADS: "3 campaigns, $30k budget",
-                            Platform.GOOGLE_ANALYTICS: "1M sessions tracked"
-                        }
-                        platforms_status.append([platform.value, "Connected", stats.get(platform, "Active")])
-                    
-                except Exception as e:
-                    click.echo(f"   ❌ Connection failed: {str(e)}")
-                    platforms_status.append([platform.value, "Failed", str(e)[:30]])
-            
-            # Summary table
-            click.echo("\n📋 Connection Summary:")
-            click.echo(tabulate(platforms_status,
-                              headers=["Platform", "Status", "Details"],
-                              tablefmt="pretty"))
-            
-            logger.info("Platform test completed", extra={
-                "platforms_tested": len(platforms_status)
-            })
-            
-        except Exception as e:
-            logger.error("Platform test failed", exc_info=True)
-            click.echo(f"❌ Error: {str(e)}", err=True)
-            sys.exit(1)
-    
+        client = UnifiedMarketingClient()
+        config = ctx.obj["config"]
+        rows = []
+        for platform in Platform:
+            if platform == Platform.ALL:
+                continue
+            if not config.has_platform_credentials(platform):
+                rows.append([platform.value, "not_configured", "-"])
+                continue
+            try:
+                await client.connect(platform)
+                valid = await client.validate_credentials(platform)
+                rows.append(
+                    [
+                        platform.value,
+                        "connected" if valid.get(platform.value) else "invalid",
+                        config.get_platform_config(platform.value).timeout,
+                    ]
+                )
+            except Exception as exc:
+                rows.append([platform.value, "failed", str(exc)])
+        await client.disconnect_all()
+        click.echo(tabulate(rows, headers=["Platform", "Status", "Detail"]))
+
     asyncio.run(run())
 
-@cli.command()
-@click.option('--check', '-c', is_flag=True, help='Check current security status')
-@click.option('--rotate', '-r', is_flag=True, help='Rotate encryption keys')
-@click.pass_context
-def security(ctx, check, rotate):
-    """Security management and audit"""
-    logger.info("Security management", extra={"check": check, "rotate": rotate})
-    
-    try:
-        from src.security import SecurityManager
-        sec_mgr = SecurityManager()
-        
-        if check:
-            click.echo("\n🔒 Security Status:")
-            click.echo("="*50)
-            
-            # Check API key encryption
-            click.echo("\n🔑 API Key Security:")
-            audit_results = sec_mgr.audit_api_keys()
-            
-            for result in audit_results:
-                status = "✅" if result['secure'] else "❌"
-                click.echo(f"   {status} {result['key']}: {result['status']}")
-            
-            # Check file permissions
-            click.echo("\n📁 File Permissions:")
-            perm_results = sec_mgr.check_file_permissions()
-            
-            for result in perm_results:
-                status = "✅" if result['secure'] else "❌"
-                click.echo(f"   {status} {result['file']}: {result['permissions']}")
-            
-            # Check environment
-            click.echo("\n🌍 Environment:")
-            env_secure = sec_mgr.check_environment_security()
-            status = "✅" if env_secure else "❌"
-            click.echo(f"   {status} Production mode: {not os.getenv('DEBUG', False)}")
-            
-        if rotate:
-            click.echo("\n🔄 Rotating encryption keys...")
-            sec_mgr.rotate_encryption_keys()
-            click.echo("✅ Keys rotated successfully")
-            click.echo("⚠️  Remember to re-encrypt stored credentials")
-            
-        logger.info("Security check completed")
-        
-    except Exception as e:
-        logger.error("Security operation failed", exc_info=True)
-        click.echo(f"❌ Error: {str(e)}", err=True)
-        sys.exit(1)
 
 @cli.command()
-@click.argument('command', type=click.Choice(['start', 'stop', 'status']))
-@click.pass_context
-def server(ctx, command):
-    """Control the MCP server"""
-    logger.info("Server control", extra={"command": command})
-    
-    try:
-        if command == 'start':
-            click.echo("🚀 Starting MCP server...")
-            from src.server import MarketingAutomationServer
-            server = MarketingAutomationServer()
-            asyncio.run(server.run())
-            
-        elif command == 'stop':
-            click.echo("🛑 Stopping MCP server...")
-            # In production, would send signal to running server
-            click.echo("✅ Server stopped")
-            
-        elif command == 'status':
-            # Check if server is running
-            click.echo("📊 Server Status:")
-            # In production, would check actual server status
-            click.echo("   Status: Running")
-            click.echo("   Uptime: 2 days, 14 hours")
-            click.echo("   Requests: 1,234")
-            click.echo("   Avg Response: 145ms")
-            
-    except Exception as e:
-        logger.error("Server operation failed", exc_info=True)
-        click.echo(f"❌ Error: {str(e)}", err=True)
-        sys.exit(1)
+@click.option("--check", "-c", is_flag=True)
+@click.option("--rotate", "-r", is_flag=True)
+def security(check, rotate):
+    """Security management and audit."""
+    from src.security import SecurityManager
 
-if __name__ == '__main__':
+    sec_mgr = SecurityManager()
+    if check:
+        click.echo(json.dumps(sec_mgr.check_environment_security(), indent=2, default=str))
+    if rotate:
+        sec_mgr.rotate_encryption_keys()
+        click.echo("Encryption keys rotated.")
+
+
+@cli.command()
+@click.argument("command", type=click.Choice(["start", "status"]))
+def server(command):
+    """Control the MCP server."""
+    if command == "status":
+        click.echo("Server status must be checked by process supervision in this build.")
+        return
+
+    from src.server import main as server_main
+
+    asyncio.run(server_main())
+
+
+if __name__ == "__main__":
     cli(obj={})

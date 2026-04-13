@@ -277,25 +277,30 @@ def generate_roi_report(
     
     # Get task breakdown by type
     with db.get_session() as session:
-        task_breakdown = session.query(
-            AutomationTask.task_type,
-            func.count(AutomationTask.id).label('count'),
-            func.sum(AutomationTask.time_saved_minutes).label('total_time_saved'),
-            func.sum(AutomationTask.cost_saved).label('total_cost_saved')
-        ).filter(
+        completed_tasks = session.query(AutomationTask).filter(
             AutomationTask.completed_at >= start_date,
             AutomationTask.completed_at <= end_date,
             AutomationTask.status == TaskStatus.COMPLETED
-        ).group_by(AutomationTask.task_type).all()
-    
+        ).all()
+
+    grouped: Dict[TaskType, Dict[str, float]] = {}
+    for task in completed_tasks:
+        bucket = grouped.setdefault(
+            task.task_type,
+            {"count": 0, "time_saved_minutes": 0.0, "cost_saved": 0.0},
+        )
+        bucket["count"] += 1
+        bucket["time_saved_minutes"] += task.time_saved_minutes or 0.0
+        bucket["cost_saved"] += float(task.cost_saved or 0.0)
+
     task_summary = [
         {
-            'task_type': task_type.value,
-            'count': count,
-            'time_saved_hours': total_time_saved / 60 if total_time_saved else 0,
-            'cost_saved': float(total_cost_saved) if total_cost_saved else 0
+            "task_type": task_type.value,
+            "count": values["count"],
+            "time_saved_hours": values["time_saved_minutes"] / 60,
+            "cost_saved": values["cost_saved"],
         }
-        for task_type, count, total_time_saved, total_cost_saved in task_breakdown
+        for task_type, values in grouped.items()
     ]
     
     return {

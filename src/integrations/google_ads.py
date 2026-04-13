@@ -3,7 +3,7 @@
 import os
 import json
 from typing import Dict, Any, Optional, List
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 from google.oauth2 import service_account
 from google.auth.transport.requests import Request
@@ -171,9 +171,14 @@ class GoogleAdsClient(BaseIntegrationClient):
             json_data={"query": query}
         )
         
-        # Parse response
+        # Parse response. Google Ads searchStream may return either a list of batches
+        # or a flattened results payload in mocked/local environments.
         results = []
-        for batch in response.get("results", []):
+        response_batches = response.get("results", [])
+        if response_batches and isinstance(response_batches[0], dict) and "campaign" in response_batches[0]:
+            response_batches = [{"results": response_batches}]
+
+        for batch in response_batches:
             for row in batch.get("results", []):
                 result = {
                     "campaign_id": row["campaign"]["id"],

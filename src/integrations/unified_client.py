@@ -62,6 +62,10 @@ class UnifiedMarketingClient:
             except Exception as e:
                 logger.error(f"Failed to connect to {platform.value}: {e}")
                 raise
+
+    async def connect_platform(self, platform: Platform):
+        """Backward-compatible alias for connect()."""
+        await self.connect(platform)
     
     async def connect_all(self):
         """Connect to all available platforms"""

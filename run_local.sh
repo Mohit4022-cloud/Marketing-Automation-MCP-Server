@@ -27,6 +27,7 @@ if [ ! -f "venv/.installed" ]; then
     echo "📥 Installing dependencies..."
     pip install --upgrade pip
     pip install -r requirements.txt
+    pip install -e .
     touch venv/.installed
 fi
 
@@ -75,13 +76,13 @@ case $choice in
 }'
         echo ""
         echo "Press Ctrl+C to stop"
-        python -m src.server
+        python3 -m src.server
         ;;
         
     2)
         echo ""
         echo "🎬 Running Demo..."
-        python demo.py
+        python3 demo.py
         echo ""
         echo "✅ Demo complete! Check:"
         echo "   - demo_results.json for data"
@@ -204,7 +205,7 @@ if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080, debug=True)
 EOF
         
-        python temp_dashboard.py
+        python3 temp_dashboard.py
         rm -f temp_dashboard.py
         ;;
         

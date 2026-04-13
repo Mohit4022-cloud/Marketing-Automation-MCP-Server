@@ -434,7 +434,12 @@ class DatabaseManager:
             database_url = os.getenv('DATABASE_URL', 'sqlite:///marketing_automation.db')
         
         self.engine = create_engine(database_url, echo=False)
-        self.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
+        self.SessionLocal = sessionmaker(
+            autocommit=False,
+            autoflush=False,
+            bind=self.engine,
+            expire_on_commit=False,
+        )
         
         # Create tables
         Base.metadata.create_all(bind=self.engine)

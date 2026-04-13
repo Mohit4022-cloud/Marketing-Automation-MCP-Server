@@ -39,7 +39,7 @@ def main():
         print(f"\n❌ Error: {e}")
         print("\nTroubleshooting:")
         print("1. Make sure you're in the project directory")
-        print("2. Install dependencies: pip install -r requirements.txt")
+        print('2. Install dependencies: python3 -m pip install -e ".[dev]"')
         print("3. Check logs/marketing_automation.log for details")
 
 if __name__ == "__main__":
