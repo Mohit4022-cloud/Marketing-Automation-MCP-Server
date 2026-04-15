@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -23,7 +23,9 @@ class FakeProvider(BaseAIProvider):
         payload = self.payloads.pop(0)
         return payload if isinstance(payload, str) else ""
 
-    async def generate_structured(self, *, system_prompt: str, user_prompt: str, schema):
+    async def generate_structured(
+        self, *, system_prompt: str, user_prompt: str, schema
+    ):
         return self.payloads.pop(0)
 
 
@@ -81,8 +83,8 @@ async def test_analyze_campaign_performance_uses_provider():
                 },
             }
         ],
-        start_date=datetime.utcnow() - timedelta(days=7),
-        end_date=datetime.utcnow(),
+        start_date=datetime.now(UTC) - timedelta(days=7),
+        end_date=datetime.now(UTC),
     )
     assert len(result) == 1
     assert result[0].trend == "improving"
@@ -136,7 +138,12 @@ async def test_create_budget_reallocation_chain_returns_step_results():
             {
                 "campaign_id": "camp_001",
                 "campaign_name": "Summer Sale",
-                "metrics": {"clicks": 250, "conversions": 18, "cost": 500, "revenue": 1800},
+                "metrics": {
+                    "clicks": 250,
+                    "conversions": 18,
+                    "cost": 500,
+                    "revenue": 1800,
+                },
             }
         ],
         total_budget=5000,

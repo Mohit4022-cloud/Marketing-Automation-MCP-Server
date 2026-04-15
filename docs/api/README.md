@@ -207,3 +207,4 @@ Output highlights:
 - Audience segmentation is demo-only in the current repo shape.
 - Live reporting and optimization require configured platform credentials.
 - Live copy generation requires the selected AI provider to be configured.
+- Live report and optimization flows may persist internal audit records to the configured database. Those writes are internal side effects, not part of the response contract.

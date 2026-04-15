@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 import hashlib
 import random
 import uuid
@@ -50,6 +50,11 @@ def _stable_random(*parts: str) -> random.Random:
     return random.Random(seed)
 
 
+def _utcnow() -> datetime:
+    """Return an aware UTC timestamp for runtime use."""
+    return datetime.now(UTC)
+
+
 def _mode_from_config() -> ExecutionMode:
     return ExecutionMode.DEMO if get_config().ai.demo_mode else ExecutionMode.LIVE
 
@@ -68,7 +73,9 @@ def _zero_report_summary() -> Dict[str, float]:
 
 
 def _blocked_report(
-    input_data: GenerateCampaignReportInput, reason: str, warnings: List[str] | None = None
+    input_data: GenerateCampaignReportInput,
+    reason: str,
+    warnings: List[str] | None = None,
 ) -> GenerateCampaignReportOutput:
     return GenerateCampaignReportOutput(
         status=ExecutionStatus.BLOCKED,
@@ -76,7 +83,7 @@ def _blocked_report(
         blocked_reason=reason,
         warnings=warnings or [],
         report_id=str(uuid.uuid4()),
-        generated_at=datetime.utcnow(),
+        generated_at=_utcnow(),
         date_range=input_data.date_range,
         campaigns=[],
         summary=_zero_report_summary(),
@@ -144,24 +151,32 @@ def _blocked_segments(
         overlaps=None,
         recommendations=[],
         insights=[],
-        created_at=datetime.utcnow(),
+        created_at=_utcnow(),
     )
 
 
-async def _connect_available_platforms() -> Tuple[UnifiedMarketingClient, List[Platform], List[str]]:
+async def _connect_available_platforms() -> (
+    Tuple[UnifiedMarketingClient, List[Platform], List[str]]
+):
     """Connect to all configured platforms and collect warnings for failures."""
     config = get_config()
     client = UnifiedMarketingClient()
     connected: List[Platform] = []
     warnings: List[str] = []
 
-    for platform in (Platform.GOOGLE_ADS, Platform.FACEBOOK_ADS, Platform.GOOGLE_ANALYTICS):
+    for platform in (
+        Platform.GOOGLE_ADS,
+        Platform.FACEBOOK_ADS,
+        Platform.GOOGLE_ANALYTICS,
+    ):
         if not config.has_platform_credentials(platform):
             continue
         try:
             await client.connect(platform)
             connected.append(platform)
-        except Exception as exc:  # pragma: no cover - exercised via integration boundaries
+        except (
+            Exception
+        ) as exc:  # pragma: no cover - exercised via integration boundaries
             warnings.append(f"Failed to connect to {platform.value}: {exc}")
 
     return client, connected, warnings
@@ -210,7 +225,14 @@ def _aggregate_campaign_rows(results: Dict[str, Dict]) -> List[CampaignMetrics]:
             entry = aggregated[campaign_id]
             entry["platforms"].add(platform_name)
             for metric_name, metric_value in row.get("metrics", {}).items():
-                if metric_name in {"impressions", "clicks", "conversions", "cost", "revenue", "reach"}:
+                if metric_name in {
+                    "impressions",
+                    "clicks",
+                    "conversions",
+                    "cost",
+                    "revenue",
+                    "reach",
+                }:
                     entry[metric_name] += float(metric_value or 0.0)
 
     campaigns: List[CampaignMetrics] = []
@@ -221,7 +243,11 @@ def _aggregate_campaign_rows(results: Dict[str, Dict]) -> List[CampaignMetrics]:
             CampaignMetrics(
                 campaign_id=campaign_id,
                 campaign_name=str(entry["campaign_name"]),
-                platform="multi" if len(platforms) > 1 else (platforms[0] if platforms else None),
+                platform=(
+                    "multi"
+                    if len(platforms) > 1
+                    else (platforms[0] if platforms else None)
+                ),
                 **derived,
             )
         )
@@ -238,15 +264,21 @@ def _build_report_summary(campaigns: Sequence[CampaignMetrics]) -> Dict[str, flo
         "total_conversions": sum(campaign.conversions for campaign in campaigns),
         "total_cost": round(sum(campaign.cost for campaign in campaigns), 2),
         "total_revenue": round(sum(campaign.revenue for campaign in campaigns), 2),
-        "average_ctr": round(sum(campaign.ctr for campaign in campaigns) / len(campaigns), 2),
+        "average_ctr": round(
+            sum(campaign.ctr for campaign in campaigns) / len(campaigns), 2
+        ),
         "average_conversion_rate": round(
             sum(campaign.conversion_rate for campaign in campaigns) / len(campaigns), 2
         ),
-        "average_roi": round(sum(campaign.roi for campaign in campaigns) / len(campaigns), 2),
+        "average_roi": round(
+            sum(campaign.roi for campaign in campaigns) / len(campaigns), 2
+        ),
     }
 
 
-def _build_report_charts(campaigns: Sequence[CampaignMetrics]) -> List[Dict[str, object]]:
+def _build_report_charts(
+    campaigns: Sequence[CampaignMetrics],
+) -> List[Dict[str, object]]:
     """Build lightweight chart descriptors for report consumers."""
     return [
         {
@@ -268,14 +300,20 @@ def _build_report_charts(campaigns: Sequence[CampaignMetrics]) -> List[Dict[str,
     ]
 
 
-def _persist_campaign_snapshots(campaigns: Sequence[CampaignMetrics]):
-    """Persist live campaign snapshots into the database layer."""
+def _persist_campaign_snapshots(
+    campaigns: Sequence[CampaignMetrics], window_start: str, window_end: str
+):
+    """Persist live campaign snapshots into the database layer idempotently."""
     if not campaigns:
         return
     db = DatabaseManager()
     with db.get_session() as session:
         for campaign in campaigns:
-            existing = session.query(Campaign).filter_by(campaign_id=campaign.campaign_id).first()
+            existing = (
+                session.query(Campaign)
+                .filter_by(campaign_id=campaign.campaign_id)
+                .first()
+            )
             if not existing:
                 existing = Campaign(
                     campaign_id=campaign.campaign_id,
@@ -283,30 +321,38 @@ def _persist_campaign_snapshots(campaigns: Sequence[CampaignMetrics]):
                     platform=campaign.platform or "aggregated",
                     status="active",
                     budget=0,
-                    start_date=datetime.utcnow() - timedelta(days=30),
+                    start_date=_utcnow() - timedelta(days=30),
                 )
                 session.add(existing)
                 session.flush()
-            session.add(
-                PerformanceMetrics(
-                    metric_id=f"metric_{campaign.campaign_id}_{int(datetime.utcnow().timestamp())}",
-                    campaign_id=existing.id,
-                    metric_date=datetime.utcnow(),
-                    impressions=campaign.impressions,
-                    clicks=campaign.clicks,
-                    conversions=campaign.conversions,
-                    revenue=campaign.revenue,
-                    cost=campaign.cost,
-                    ctr=campaign.ctr,
-                    conversion_rate=campaign.conversion_rate,
-                    roas=(campaign.revenue / campaign.cost) if campaign.cost else 0,
-                    is_automated=False,
-                    automation_applied=["mcp_report_sync"],
-                )
+            metric_id = _stable_id(
+                "metric", campaign.campaign_id, window_start, window_end
             )
+            metric = (
+                session.query(PerformanceMetrics).filter_by(metric_id=metric_id).first()
+            )
+            if not metric:
+                metric = PerformanceMetrics(
+                    metric_id=metric_id,
+                    campaign_id=existing.id,
+                    metric_date=_utcnow(),
+                )
+                session.add(metric)
+            metric.impressions = campaign.impressions
+            metric.clicks = campaign.clicks
+            metric.conversions = campaign.conversions
+            metric.revenue = campaign.revenue
+            metric.cost = campaign.cost
+            metric.ctr = campaign.ctr
+            metric.conversion_rate = campaign.conversion_rate
+            metric.roas = (campaign.revenue / campaign.cost) if campaign.cost else 0
+            metric.is_automated = False
+            metric.automation_applied = ["mcp_report_sync"]
 
 
-def _demo_campaign_metrics(input_data: GenerateCampaignReportInput) -> List[CampaignMetrics]:
+def _demo_campaign_metrics(
+    input_data: GenerateCampaignReportInput,
+) -> List[CampaignMetrics]:
     """Generate deterministic demo report data."""
     campaigns: List[CampaignMetrics] = []
     for campaign_id in input_data.campaign_ids:
@@ -341,7 +387,9 @@ def _demo_campaign_metrics(input_data: GenerateCampaignReportInput) -> List[Camp
     return campaigns
 
 
-def _build_demo_copy_variant(input_data: CreateCampaignCopyInput, index: int) -> CopyVariant:
+def _build_demo_copy_variant(
+    input_data: CreateCampaignCopyInput, index: int
+) -> CopyVariant:
     """Generate a deterministic copy variant for demo mode."""
     rng = _stable_random(
         "copy",
@@ -356,7 +404,10 @@ def _build_demo_copy_variant(input_data: CreateCampaignCopyInput, index: int) ->
         "turn performance data into action faster",
     ]
     verbs = ["Unlock", "Scale", "Improve", "Reduce"]
-    cta = input_data.call_to_action or ["Book a demo", "See the workflow", "Get started"][index % 3]
+    cta = (
+        input_data.call_to_action
+        or ["Book a demo", "See the workflow", "Get started"][index % 3]
+    )
     headline = f"{rng.choice(verbs)} {input_data.product_name}"
     content = (
         f"{headline}: {input_data.product_description}. "
@@ -372,7 +423,11 @@ def _build_demo_copy_variant(input_data: CreateCampaignCopyInput, index: int) ->
         tone_match_score=round(0.86 + (index * 0.03), 2),
         predicted_ctr=round(2.4 + index * 0.6, 2),
         keywords=input_data.keywords[:],
-        key_elements=[input_data.product_name, input_data.target_audience, input_data.tone.value],
+        key_elements=[
+            input_data.product_name,
+            input_data.target_audience,
+            input_data.tone.value,
+        ],
         character_count=len(content),
         word_count=len(content.split()),
         headline=headline,
@@ -380,13 +435,18 @@ def _build_demo_copy_variant(input_data: CreateCampaignCopyInput, index: int) ->
     )
 
 
-def _demo_segments(input_data: AnalyzeAudienceSegmentsInput) -> Tuple[List[AudienceSegment], List[SegmentOverlap], List[AudienceRecommendation]]:
+def _demo_segments(
+    input_data: AnalyzeAudienceSegmentsInput,
+) -> Tuple[List[AudienceSegment], List[SegmentOverlap], List[AudienceRecommendation]]:
     """Generate deterministic audience segments for demo mode."""
     criteria_labels = [criterion.value for criterion in input_data.criteria]
     rng = _stable_random("segments", input_data.contact_list_id, *criteria_labels)
     templates = [
         ("High-Intent Buyers", {"engagement": "high", "purchase_history": "recent"}),
-        ("Expansion Accounts", {"company_size": "mid-market", "interest": "automation"}),
+        (
+            "Expansion Accounts",
+            {"company_size": "mid-market", "interest": "automation"},
+        ),
         ("Reactivation Targets", {"recency": "90+ days", "engagement": "declining"}),
         ("Exec Champions", {"title_band": "director+", "seniority": "high"}),
     ]
@@ -407,14 +467,20 @@ def _demo_segments(input_data: AnalyzeAudienceSegmentsInput) -> Tuple[List[Audie
                 characteristics=characteristics,
                 engagement_score=round(0.55 + index * 0.08, 2),
                 value_score=round(0.62 + index * 0.07, 2),
-                recommended_campaigns=["Budget Reallocation", "Creative Refresh", "Audience Expansion"],
+                recommended_campaigns=[
+                    "Budget Reallocation",
+                    "Creative Refresh",
+                    "Audience Expansion",
+                ],
             )
         )
         recommendations.append(
             AudienceRecommendation(
                 segment_name=name,
                 strategy="Use persona-specific proof points and a clear commercial wedge",
-                channels=["email", "paid_social"] if index % 2 == 0 else ["search", "email"],
+                channels=(
+                    ["email", "paid_social"] if index % 2 == 0 else ["search", "email"]
+                ),
                 timing="Mid-week mornings",
                 rationale=f"{name} scores well on value and engagement in the demo dataset",
             )
@@ -443,7 +509,10 @@ def _requested_fetch_metrics(metrics: Iterable[MetricType]) -> List[str]:
         fetch_metrics.update({"clicks", "conversions"})
     if "roi" in requested:
         fetch_metrics.update({"cost", "revenue"})
-    return sorted(fetch_metrics & {"impressions", "clicks", "conversions", "cost", "revenue", "reach"})
+    return sorted(
+        fetch_metrics
+        & {"impressions", "clicks", "conversions", "cost", "revenue", "reach"}
+    )
 
 
 async def generate_campaign_report(
@@ -457,11 +526,13 @@ async def generate_campaign_report(
             status=ExecutionStatus.OK,
             mode=ExecutionMode.DEMO,
             report_id=_stable_id("report", *input_data.campaign_ids),
-            generated_at=datetime.utcnow(),
+            generated_at=_utcnow(),
             date_range=input_data.date_range,
             campaigns=campaigns,
             summary=_build_report_summary(campaigns),
-            charts=_build_report_charts(campaigns) if input_data.include_charts else None,
+            charts=(
+                _build_report_charts(campaigns) if input_data.include_charts else None
+            ),
             format=input_data.format,
             download_url=None,
             warnings=["Demo mode uses deterministic sample campaign data."],
@@ -489,7 +560,8 @@ async def generate_campaign_report(
 
     campaigns = _aggregate_campaign_rows(results.get("results", {}))
     warnings.extend(
-        f"{platform}: {message}" for platform, message in results.get("errors", {}).items()
+        f"{platform}: {message}"
+        for platform, message in results.get("errors", {}).items()
     )
     if not campaigns:
         return _blocked_report(
@@ -498,7 +570,11 @@ async def generate_campaign_report(
             warnings,
         )
 
-    _persist_campaign_snapshots(campaigns)
+    _persist_campaign_snapshots(
+        campaigns,
+        input_data.date_range["start"],
+        input_data.date_range["end"],
+    )
     live_warnings = warnings[:]
     if input_data.format != ReportFormat.JSON:
         live_warnings.append(
@@ -508,7 +584,7 @@ async def generate_campaign_report(
         status=ExecutionStatus.OK,
         mode=ExecutionMode.LIVE,
         report_id=str(uuid.uuid4()),
-        generated_at=datetime.utcnow(),
+        generated_at=_utcnow(),
         date_range=input_data.date_range,
         campaigns=campaigns,
         summary=_build_report_summary(campaigns),
@@ -519,16 +595,22 @@ async def generate_campaign_report(
     )
 
 
-def _allocation_scores(campaigns: Sequence[CampaignMetrics], goal: OptimizationGoal) -> Dict[str, float]:
+def _allocation_scores(
+    campaigns: Sequence[CampaignMetrics], goal: OptimizationGoal
+) -> Dict[str, float]:
     """Create stable score weights for budget allocation."""
     scores: Dict[str, float] = {}
     for campaign in campaigns:
         if goal == OptimizationGoal.MAXIMIZE_CONVERSIONS:
             score = campaign.conversions + max(campaign.ctr, 0.1)
         elif goal == OptimizationGoal.MAXIMIZE_REACH:
-            score = (campaign.reach or campaign.impressions or 1) + max(campaign.ctr, 0.1)
+            score = (campaign.reach or campaign.impressions or 1) + max(
+                campaign.ctr, 0.1
+            )
         else:
-            score = max(campaign.roi, 1.0) + campaign.conversions + max(campaign.ctr, 0.1)
+            score = (
+                max(campaign.roi, 1.0) + campaign.conversions + max(campaign.ctr, 0.1)
+            )
         scores[campaign.campaign_id] = max(score, 1.0)
     return scores
 
@@ -561,7 +643,9 @@ def _build_allocations(
             {
                 "roi_change": round(max(campaign.roi / 10, 2.0), 2),
                 "conversion_change": round(max(campaign.conversions / 10, 1.0), 2),
-                "cost_change": round(((recommended_budget - current_budget) / current_budget) * 100, 2),
+                "cost_change": round(
+                    ((recommended_budget - current_budget) / current_budget) * 100, 2
+                ),
             },
         )
         allocations.append(
@@ -589,9 +673,14 @@ def _normalize_allocations(
         return allocations
     scale_factor = total_budget / recommended_total
     for allocation in allocations:
-        allocation.recommended_budget = round(allocation.recommended_budget * scale_factor, 2)
+        allocation.recommended_budget = round(
+            allocation.recommended_budget * scale_factor, 2
+        )
         allocation.change_percentage = round(
-            ((allocation.recommended_budget - allocation.current_budget) / allocation.current_budget)
+            (
+                (allocation.recommended_budget - allocation.current_budget)
+                / allocation.current_budget
+            )
             * 100,
             2,
         )
@@ -599,10 +688,22 @@ def _normalize_allocations(
 
 
 def _persist_optimization_decision(
-    allocations: Sequence[BudgetAllocation], projected_improvement: ProjectedImprovement
+    allocations: Sequence[BudgetAllocation],
+    projected_improvement: ProjectedImprovement,
+    total_budget: float,
+    optimization_goal: OptimizationGoal,
 ):
     """Persist one optimization decision record into the database."""
     db = DatabaseManager()
+    decision_id = _stable_id(
+        "optimization-decision",
+        optimization_goal.value,
+        f"{total_budget:.2f}",
+        *[
+            f"{allocation.campaign_id}:{allocation.recommended_budget:.2f}"
+            for allocation in sorted(allocations, key=lambda item: item.campaign_id)
+        ],
+    )
     db.record_ai_decision(
         decision_type=DecisionType.BUDGET_ALLOCATION,
         input_data={"allocations_requested": len(allocations)},
@@ -620,6 +721,7 @@ def _persist_optimization_decision(
         reasoning="Budget allocations generated from live metrics and provider-backed optimization suggestions.",
         expected_impact=projected_improvement.model_dump(),
         campaign_id=None,
+        decision_id=decision_id,
     )
 
 
@@ -633,10 +735,18 @@ async def optimize_campaign_budget(
             GenerateCampaignReportInput(
                 campaign_ids=input_data.campaign_ids,
                 date_range={
-                    "start": (datetime.utcnow() - timedelta(days=input_data.historical_days)).date().isoformat(),
-                    "end": datetime.utcnow().date().isoformat(),
+                    "start": (_utcnow() - timedelta(days=input_data.historical_days))
+                    .date()
+                    .isoformat(),
+                    "end": _utcnow().date().isoformat(),
                 },
-                metrics=[MetricType.IMPRESSIONS, MetricType.CLICKS, MetricType.CONVERSIONS, MetricType.COST, MetricType.REVENUE],
+                metrics=[
+                    MetricType.IMPRESSIONS,
+                    MetricType.CLICKS,
+                    MetricType.CONVERSIONS,
+                    MetricType.COST,
+                    MetricType.REVENUE,
+                ],
             )
         )
         allocations = _normalize_allocations(
@@ -681,9 +791,16 @@ async def optimize_campaign_budget(
     try:
         results = await client.fetch_campaign_performance(
             campaign_ids=input_data.campaign_ids,
-            start_date=datetime.utcnow() - timedelta(days=input_data.historical_days),
-            end_date=datetime.utcnow(),
-            metrics=["impressions", "clicks", "conversions", "cost", "revenue", "reach"],
+            start_date=_utcnow() - timedelta(days=input_data.historical_days),
+            end_date=_utcnow(),
+            metrics=[
+                "impressions",
+                "clicks",
+                "conversions",
+                "cost",
+                "revenue",
+                "reach",
+            ],
             platforms=connected,
         )
     finally:
@@ -691,7 +808,8 @@ async def optimize_campaign_budget(
 
     campaigns = _aggregate_campaign_rows(results.get("results", {}))
     warnings.extend(
-        f"{platform}: {message}" for platform, message in results.get("errors", {}).items()
+        f"{platform}: {message}"
+        for platform, message in results.get("errors", {}).items()
     )
     if not campaigns:
         return _blocked_optimization(
@@ -708,13 +826,19 @@ async def optimize_campaign_budget(
                     "campaign_id": campaign.campaign_id,
                     "campaign_name": campaign.campaign_name,
                     "metrics": campaign.model_dump(
-                        include={"impressions", "clicks", "conversions", "cost", "revenue"}
+                        include={
+                            "impressions",
+                            "clicks",
+                            "conversions",
+                            "cost",
+                            "revenue",
+                        }
                     ),
                 }
                 for campaign in campaigns
             ],
-            start_date=datetime.utcnow() - timedelta(days=input_data.historical_days),
-            end_date=datetime.utcnow(),
+            start_date=_utcnow() - timedelta(days=input_data.historical_days),
+            end_date=_utcnow(),
         )
         suggestions = await ai_engine.generate_optimization_suggestions(
             campaigns=analyzed,
@@ -744,7 +868,10 @@ async def optimize_campaign_budget(
     )
     projected = ProjectedImprovement(
         roi_change=round(
-            sum(allocation.expected_impact.get("roi_change", 0.0) for allocation in allocations)
+            sum(
+                allocation.expected_impact.get("roi_change", 0.0)
+                for allocation in allocations
+            )
             / max(len(allocations), 1),
             2,
         ),
@@ -762,12 +889,20 @@ async def optimize_campaign_budget(
             2,
         ),
         cpa_change=round(
-            -sum(allocation.expected_impact.get("cost_change", 0.0) for allocation in allocations)
+            -sum(
+                allocation.expected_impact.get("cost_change", 0.0)
+                for allocation in allocations
+            )
             / max(len(allocations), 1),
             2,
         ),
     )
-    _persist_optimization_decision(allocations, projected)
+    _persist_optimization_decision(
+        allocations,
+        projected,
+        input_data.total_budget,
+        input_data.optimization_goal,
+    )
     return OptimizeCampaignBudgetOutput(
         status=ExecutionStatus.OK,
         mode=ExecutionMode.LIVE,
@@ -778,9 +913,9 @@ async def optimize_campaign_budget(
         projected_improvement=projected,
         confidence_score=round(
             sum(
-                suggestions_by_campaign.get(allocation.campaign_id, {}).get("predicted_impact", {}).get(
-                    "roi_change", 0.0
-                )
+                suggestions_by_campaign.get(allocation.campaign_id, {})
+                .get("predicted_impact", {})
+                .get("roi_change", 0.0)
                 >= 0
                 for allocation in allocations
             )
@@ -806,11 +941,15 @@ async def create_campaign_copy(
             _build_demo_copy_variant(input_data, index)
             for index in range(input_data.variants_count)
         ]
-        best_variant = max(variants, key=lambda variant: variant.tone_match_score, default=None)
+        best_variant = max(
+            variants, key=lambda variant: variant.tone_match_score, default=None
+        )
         return CreateCampaignCopyOutput(
             status=ExecutionStatus.OK,
             mode=ExecutionMode.DEMO,
-            copy_generation_id=_stable_id("copy-generation", input_data.product_name, input_data.copy_type),
+            copy_generation_id=_stable_id(
+                "copy-generation", input_data.product_name, input_data.copy_type
+            ),
             copy_type=input_data.copy_type,
             variants=variants,
             tone=input_data.tone,
@@ -841,19 +980,27 @@ async def create_campaign_copy(
             content = f"{content[: input_data.max_length - 3]}..."
         variants.append(
             CopyVariant(
-                variant_id=_stable_id("provider-copy", input_data.product_name, str(index)),
+                variant_id=_stable_id(
+                    "provider-copy", input_data.product_name, str(index)
+                ),
                 content=content,
                 tone_match_score=round(0.88 + min(index, 3) * 0.02, 2),
                 predicted_ctr=variant.predicted_ctr,
                 keywords=variant.keywords,
-                key_elements=[variant.headline, variant.call_to_action, input_data.tone.value],
+                key_elements=[
+                    variant.headline,
+                    variant.call_to_action,
+                    input_data.tone.value,
+                ],
                 character_count=len(content),
                 word_count=len(content.split()),
                 headline=variant.headline,
                 call_to_action=variant.call_to_action,
             )
         )
-    best_variant = max(variants, key=lambda item: item.predicted_ctr or 0.0, default=None)
+    best_variant = max(
+        variants, key=lambda item: item.predicted_ctr or 0.0, default=None
+    )
     return CreateCampaignCopyOutput(
         status=ExecutionStatus.OK,
         mode=ExecutionMode.LIVE,
@@ -864,7 +1011,10 @@ async def create_campaign_copy(
         target_audience=input_data.target_audience,
         keywords_used=input_data.keywords,
         best_variant_id=best_variant.variant_id if best_variant else None,
-        generation_metadata={"provider": get_config().ai.provider, "model": ai_engine.model},
+        generation_metadata={
+            "provider": get_config().ai.provider,
+            "model": ai_engine.model,
+        },
     )
 
 
@@ -895,6 +1045,6 @@ async def analyze_audience_segments(
             f"Highest value segment: {max(segments, key=lambda segment: segment.value_score).name}",
             f"Most engaged segment: {max(segments, key=lambda segment: segment.engagement_score).name}",
         ],
-        created_at=datetime.utcnow(),
+        created_at=_utcnow(),
         warnings=["Demo mode uses deterministic sample audience data."],
     )

@@ -127,7 +127,9 @@ class AIConfig:
     anthropic: AnthropicProviderConfig = field(default_factory=AnthropicProviderConfig)
     gemini: GeminiProviderConfig = field(default_factory=GeminiProviderConfig)
 
-    def get_provider_config(self, provider_name: Optional[str] = None) -> ProviderConfig:
+    def get_provider_config(
+        self, provider_name: Optional[str] = None
+    ) -> ProviderConfig:
         provider = (provider_name or self.provider).lower()
         config = getattr(self, provider, None)
         if not isinstance(config, ProviderConfig):
@@ -212,8 +214,12 @@ class Config:
 
         key = self.security.encryption_key or os.getenv("ENCRYPTION_KEY")
         if not key:
-            key = Fernet.generate_key().decode()
-            logger.warning("No encryption key found, generating a temporary key")
+            self.security.api_key_encryption = False
+            self._cipher_suite = None
+            logger.warning(
+                "No ENCRYPTION_KEY configured; API key encryption is disabled for this process"
+            )
+            return
         self.security.encryption_key = key
         self._cipher_suite = Fernet(key.encode())
 
@@ -302,7 +308,9 @@ class Config:
         self.facebook_ads.ad_account_id = os.getenv("FACEBOOK_AD_ACCOUNT_ID", "")
         self.facebook_ads.enabled = bool(self.facebook_ads.app_id)
 
-        self.google_analytics.property_id = os.getenv("GOOGLE_ANALYTICS_PROPERTY_ID", "")
+        self.google_analytics.property_id = os.getenv(
+            "GOOGLE_ANALYTICS_PROPERTY_ID", ""
+        )
         self.google_analytics.client_id = os.getenv("GOOGLE_ANALYTICS_CLIENT_ID", "")
         self.google_analytics.client_secret = os.getenv(
             "GOOGLE_ANALYTICS_CLIENT_SECRET", ""
@@ -310,9 +318,9 @@ class Config:
         self.google_analytics.refresh_token = os.getenv(
             "GOOGLE_ANALYTICS_REFRESH_TOKEN", ""
         )
-        self.google_analytics.service_account_path = os.getenv(
-            "GOOGLE_ANALYTICS_SERVICE_ACCOUNT_PATH", ""
-        ) or None
+        self.google_analytics.service_account_path = (
+            os.getenv("GOOGLE_ANALYTICS_SERVICE_ACCOUNT_PATH", "") or None
+        )
         self.google_analytics.enabled = bool(self.google_analytics.property_id)
 
         self.ai.provider = os.getenv("AI_PROVIDER", self.ai.provider).lower()
@@ -338,9 +346,7 @@ class Config:
             os.getenv("AI_ANTHROPIC_MAX_TOKENS", str(self.ai.anthropic.max_tokens))
         )
         self.ai.anthropic.temperature = float(
-            os.getenv(
-                "AI_ANTHROPIC_TEMPERATURE", str(self.ai.anthropic.temperature)
-            )
+            os.getenv("AI_ANTHROPIC_TEMPERATURE", str(self.ai.anthropic.temperature))
         )
 
         self.ai.gemini.api_key = os.getenv("GEMINI_API_KEY", "") or os.getenv(
@@ -381,7 +387,9 @@ class Config:
 
         if not self.security.secret_key:
             self.security.secret_key = os.urandom(32).hex()
-            logger.warning("Generated random secret key")
+            logger.warning(
+                "Generated process-local SECRET_KEY; set SECRET_KEY explicitly for stable token behavior"
+            )
 
         if errors:
             raise ValueError(f"Configuration errors: {', '.join(errors)}")
@@ -429,7 +437,9 @@ class Config:
             )
         return False
 
-    def get_ai_provider_config(self, provider_name: Optional[str] = None) -> ProviderConfig:
+    def get_ai_provider_config(
+        self, provider_name: Optional[str] = None
+    ) -> ProviderConfig:
         """Return the configured AI provider configuration."""
         return self.ai.get_provider_config(provider_name)
 
@@ -495,15 +505,19 @@ class Config:
     def to_dict(self) -> Dict[str, Any]:
         """Convert configuration to a debug-safe dictionary."""
         return {
-            "platforms_enabled": [name for name, config in self.platforms.items() if config.enabled],
+            "platforms_enabled": [
+                name for name, config in self.platforms.items() if config.enabled
+            ],
             "ai_provider": self.ai.provider,
             "demo_mode": self.ai.demo_mode,
             "openai_model": self.ai.openai.model,
             "anthropic_model": self.ai.anthropic.model,
             "gemini_model": self.ai.gemini.model,
-            "database_url": self.database.url.split("@")[0]
-            if "@" in self.database.url
-            else self.database.url,
+            "database_url": (
+                self.database.url.split("@")[0]
+                if "@" in self.database.url
+                else self.database.url
+            ),
             "cache_enabled": self.performance.cache_enabled,
             "log_level": self.logging.level,
         }

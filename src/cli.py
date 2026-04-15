@@ -7,7 +7,7 @@ import asyncio
 import json
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import click
 from tabulate import tabulate
@@ -69,7 +69,7 @@ def report(campaign_ids, days, format, output):
     """Generate a campaign performance report."""
 
     async def run():
-        end_date = datetime.utcnow()
+        end_date = datetime.now(UTC)
         start_date = end_date - timedelta(days=days)
         result = await generate_campaign_report(
             GenerateCampaignReportInput(
@@ -154,7 +154,9 @@ def optimize(campaign_ids, budget, goal, apply):
             ]
             for allocation in result.allocations
         ]
-        click.echo(tabulate(rows, headers=["Campaign", "Current", "Recommended", "Change"]))
+        click.echo(
+            tabulate(rows, headers=["Campaign", "Current", "Recommended", "Change"])
+        )
 
         if result.recommendations:
             click.echo("Recommendations:")
@@ -279,7 +281,7 @@ def segment(list_id, min_size, max_segments):
 def metrics(days):
     """Display automation metrics and ROI."""
     db = DatabaseManager()
-    end_date = datetime.utcnow()
+    end_date = datetime.now(UTC)
     start_date = end_date - timedelta(days=days)
     roi_data = db.calculate_period_roi(period_start=start_date, period_end=end_date)
     click.echo(f"Tasks automated: {roi_data.tasks_automated}")
@@ -330,7 +332,9 @@ def security(check, rotate):
 
     sec_mgr = SecurityManager()
     if check:
-        click.echo(json.dumps(sec_mgr.check_environment_security(), indent=2, default=str))
+        click.echo(
+            json.dumps(sec_mgr.check_environment_security(), indent=2, default=str)
+        )
     if rotate:
         sec_mgr.rotate_encryption_keys()
         click.echo("Encryption keys rotated.")
@@ -341,12 +345,14 @@ def security(check, rotate):
 def server(command):
     """Control the MCP server."""
     if command == "status":
-        click.echo("Server status must be checked by process supervision in this build.")
+        click.echo(
+            "Server status must be checked by process supervision in this build."
+        )
         return
 
     from src.server import main as server_main
 
-    asyncio.run(server_main())
+    server_main()
 
 
 if __name__ == "__main__":

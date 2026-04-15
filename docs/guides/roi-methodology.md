@@ -2,7 +2,14 @@
 
 ## Overview
 
-This document explains the methodology used to calculate Return on Investment (ROI) for marketing automation tasks. Our approach measures both direct financial returns and indirect benefits like time savings and efficiency improvements.
+This document explains the methodology the repo uses to reason about ROI for marketing automation tasks. It is a methodology guide, not a guarantee of production lift.
+
+Use it for:
+- understanding how internal ROI-related calculations are framed
+- interpreting database-side savings and impact records
+- reviewing assumptions behind automation impact reporting
+
+Do not use it as the public MCP contract. For that, see [docs/api/README.md](/Users/mohit/Marketing-Automation-MCP-Server/docs/api/README.md).
 
 ## Table of Contents
 
@@ -54,6 +61,8 @@ time_saved_minutes = manual_duration_minutes - (automated_duration_seconds / 60)
 ```
 
 ### Task Duration Estimates
+
+These task durations are illustrative operator assumptions used for savings calculations. They are not externally benchmarked guarantees.
 
 | Task Type | Manual Duration | Automated Duration | Time Saved |
 |-----------|----------------|-------------------|------------|
@@ -258,8 +267,14 @@ class ROIDashboard:
                 'roi_lift': self.average_roi_improvement,
                 'campaigns_optimized': self.campaigns_optimized_count
             }
-        }
+            }
 ```
+
+## Current Scope Notes
+
+- Live report and optimization workflows may persist internal audit records used in ROI-style reporting.
+- Audience segmentation is demo-only in the current repo shape.
+- Demo scripts and dashboards may display illustrative savings values that are separate from the supported MCP tool contract.
 
 ### 2. Visualization Examples
 
@@ -325,7 +340,7 @@ def generate_executive_summary(period_data):
 
 ### Campaign Optimization ROI
 
-**Scenario**: Optimizing 10 Google Ads campaigns with $50,000 monthly budget
+**Illustrative scenario**: Optimizing 10 campaigns with a $50,000 monthly budget
 
 **Manual Process**:
 - Time: 3 hours daily = 90 hours/month
@@ -353,9 +368,9 @@ vs. $50,000 × 2.5 = $125,000 (manual)
 revenue_increase = $30,000/month = $360,000/year
 
 # Total ROI
-total_benefit = $78,750 + $360,000 = $438,750
-automation_cost = $10,000/year (estimated)
-roi = ($438,750 - $10,000) / $10,000 × 100 = 4,287.5%
+total_benefit = annual_labor_saved + annual_revenue_uplift
+automation_cost = annual_automation_cost
+roi = (total_benefit - automation_cost) / automation_cost × 100
 ```
 
 ## Best Practices
