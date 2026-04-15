@@ -8,6 +8,8 @@ services:
       dockerfile: Dockerfile
     container_name: marketing-automation-mcp
     environment:
+      - AI_PROVIDER=${AI_PROVIDER:-openai}
+      - AI_OPENAI_MODEL=${AI_OPENAI_MODEL:-gpt-5.4}
       # OpenAI Configuration
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       
@@ -106,6 +108,8 @@ services:
     container_name: marketing-demo
     environment:
       - DEMO_MODE=true
+      - AI_PROVIDER=${AI_PROVIDER:-openai}
+      - AI_OPENAI_MODEL=${AI_OPENAI_MODEL:-gpt-5.4}
       - PYTHONUNBUFFERED=1
     volumes:
       - ./demo_output:/app/output

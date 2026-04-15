@@ -1,43 +1,71 @@
 # Marketing Automation MCP Server
 
-Marketing Automation MCP Server is a Python MCP service for campaign reporting, budget optimization, copy generation, and demo-only audience segmentation.
+`marketing-automation-mcp` is a Python MCP server for deterministic campaign reporting, provider-backed budget optimization, copy generation, and demo-only audience segmentation.
 
-This repo now has two explicit execution modes:
+This repo now favors reproducibility over ad hoc setup:
+- Supported Python: `3.12` and `3.13`
+- Local bootstrap: `uv`
+- Primary MCP transport: `stdio`
+- Local Python `3.14.x` is treated as compatibility work, not the supported baseline
 
-- `DEMO_MODE=true`: deterministic sample outputs for local demos and contract testing
-- `DEMO_MODE=false`: live mode that uses configured ad-platform credentials and the selected AI provider
+## Current Scope
 
-Live mode is intentionally honest. If a required platform or AI provider is not configured, the tool returns a structured `blocked` response instead of fabricating output.
+The public MCP contract in this repo is intentionally narrow:
+- `generate_campaign_report`
+- `optimize_campaign_budget`
+- `create_campaign_copy`
+- `analyze_audience_segments`
 
-## What Works
+Only these four tools are part of the supported server surface today. Other modules under `src/tools/` exist as internal or aspirational code paths and should not be treated as production MCP features.
 
-- MCP server entrypoint in [src/server.py](/Users/mohit/Marketing-Automation-MCP-Server/src/server.py)
-- CLI for local testing in [src/cli.py](/Users/mohit/Marketing-Automation-MCP-Server/src/cli.py)
-- Unified marketing platform client in [src/integrations/unified_client.py](/Users/mohit/Marketing-Automation-MCP-Server/src/integrations/unified_client.py)
-- Provider-backed AI engine with OpenAI, Anthropic, and Gemini adapters under [src/ai/providers](/Users/mohit/Marketing-Automation-MCP-Server/src/ai/providers)
-- SQLAlchemy persistence for campaigns, automation tasks, metrics, and AI decisions in [src/database.py](/Users/mohit/Marketing-Automation-MCP-Server/src/database.py)
+## Execution Modes
 
-## AI Providers
+- `DEMO_MODE=true`
+  Returns deterministic sample data for demos and contract testing.
+- `DEMO_MODE=false`
+  Uses real platform credentials and the selected AI provider.
+  Missing live dependencies return structured `blocked` responses instead of fabricated output.
 
-- Default provider: OpenAI with model `gpt-5.4`
-- Optional providers: Anthropic and Gemini
-- OpenAI uses the Responses API path in the provider adapter
-- Anthropic and Gemini are wired through the same `generate_text()` / `generate_structured()` abstraction
-
-## Install
+## Clean Machine Setup
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python3 -m pip install --upgrade pip
-python3 -m pip install -e ".[dev]"
+uv sync --python 3.13 --extra dev
+cp .env.example .env
+uv run python -m compileall src tests dashboard
+uv run pytest
 ```
 
-If you prefer `requirements.txt`:
+If you need a pip fallback:
 
 ```bash
-python3 -m pip install -r requirements.txt
-python3 -m pip install -e .
+python3.13 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev]"
+```
+
+## Run The Server
+
+Start the MCP server in its supported transport mode:
+
+```bash
+uv run python -m src.server
+```
+
+The server currently documents and supports `stdio` transport only.
+
+Claude Desktop configuration:
+
+```json
+{
+  "mcpServers": {
+    "marketing-automation": {
+      "command": "uv",
+      "args": ["run", "python", "-m", "src.server"],
+      "cwd": "/absolute/path/to/Marketing-Automation-MCP-Server"
+    }
+  }
+}
 ```
 
 ## Configure
@@ -50,7 +78,7 @@ Minimum useful configurations:
 
 - Demo mode only:
   - `DEMO_MODE=true`
-- Live report / optimize:
+- Live reporting and optimization:
   - `DEMO_MODE=false`
   - one or more platform credential sets
 - Live copy generation:
@@ -64,92 +92,50 @@ Optional provider env vars:
 - `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`
 - `GEMINI_API_KEY`, `GEMINI_MODEL`
 
-## Run
+For stable live behavior, set:
 
-Start the MCP server:
+- `SECRET_KEY`
+- `ENCRYPTION_KEY`
 
-```bash
-python3 -m src.server
-```
+If `ENCRYPTION_KEY` is missing, API-key encryption is disabled for that process and the server logs a warning.
 
-Or use the installed CLI entrypoint:
+## Tool Contract
 
-```bash
-marketing-automation report --campaign-ids camp_001 --campaign-ids camp_002
-marketing-automation optimize --campaign-ids camp_001 --campaign-ids camp_002 --budget 5000
-marketing-automation copy --product "Marketing OS" --description "Turns campaign data into actions" --audience "Marketing leaders"
-marketing-automation segment
-```
-
-## MCP Tools
-
-### `generate_campaign_report`
-
-- Demo mode: deterministic campaign metrics and charts
-- Live mode: fetches campaign data from configured ad platforms
-- If no live platform credentials are available, returns `status=blocked`
-
-### `optimize_campaign_budget`
-
-- Demo mode: deterministic allocations
-- Live mode: uses platform metrics plus the configured AI provider
-- Persists one AI decision record for live optimization output
-
-### `create_campaign_copy`
-
-- Demo mode: deterministic copy variants
-- Live mode: uses the configured AI provider
-- If the selected provider is not configured, returns `status=blocked`
-
-### `analyze_audience_segments`
-
-- Demo mode only in this repo
-- Live mode returns `status=blocked` because no contact source is wired yet
-
-## Claude Desktop Configuration
+Every tool response includes these top-level fields:
 
 ```json
 {
-  "mcpServers": {
-    "marketing-automation": {
-      "command": "python3",
-      "args": ["-m", "src.server"],
-      "cwd": "/absolute/path/to/Marketing-Automation-MCP-Server"
-    }
-  }
+  "status": "ok | blocked",
+  "mode": "demo | live",
+  "blocked_reason": "optional string",
+  "warnings": []
 }
 ```
 
-## Testing
+See the full contract in [docs/api/README.md](/Users/mohit/Marketing-Automation-MCP-Server/docs/api/README.md).
+
+## Internal Write Side Effects
+
+Live report and optimization flows may persist internal audit records to the configured database:
+- report flows can persist normalized campaign snapshots
+- optimization flows can persist AI decision history
+
+These writes are internal side effects for observability and replay safety. They are not part of the public MCP response contract.
+
+## Validation Commands
 
 ```bash
-python3 -m compileall src tests dashboard
-python3 -m pytest
+uv run python -m compileall src tests dashboard
+uv run pytest
+uv run python -c "import src.server, src.cli, src.ai_engine, src.performance; print('imports ok')"
+docker build -t marketing-automation-mcp:latest .
 ```
 
-The test suite covers:
+## Documentation
 
-- provider registry selection
-- provider-backed AI engine flows
-- deterministic demo mode behavior
-- blocked live-mode behavior
-- unified client metric aggregation
-- CLI smoke paths
-
-## Project Layout
-
-```text
-src/
-  ai/
-    providers/
-  integrations/
-  tools/
-  ai_engine.py
-  cli.py
-  config.py
-  database.py
-  models.py
-  server.py
-dashboard/
-tests/
-```
+- [Quick start](./docs/quickstart.md)
+- [API reference](./docs/api/README.md)
+- [Example workflows](./docs/examples/README.md)
+- [Demo guide](./DEMO_README.md)
+- [Operator runbook](./docs/operator-runbook.md)
+- [System audit review docs](./docs/reviews/README.md)
